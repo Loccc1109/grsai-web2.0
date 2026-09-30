@@ -6,8 +6,14 @@
 // - 限制请求体、提示词、图片数量与大小、尺寸格式
 // Change2pro 文档中的统一网关；不要再使用旧的 api.change2pro.com 地址。
 const CHANGE2PRO_BASE_URL = 'https://gateway.change2pro.com';
-const DEFAULT_IMAGE_MODEL = 'gpt-image-2';
-const ALLOWED_CLIENT_MODEL = 'gpt-image-2-change2pro';
+// 前端内部模型 ID -> Change2pro 上游模型 ID（白名单，仅 OpenAI Images 接口的 GPT / Grok 模型；
+// nano-banana 系列走 Gemini 原生接口，见 gemini.js）
+const CLIENT_MODEL_MAP = {
+  'gpt-image-2-change2pro': 'gpt-image-2',
+  'gpt-image-2.5-flare-change2pro': 'gpt-image-2.5-flare',
+  'gpt-image-2.5-sunburst-change2pro': 'gpt-image-2.5-sunburst',
+  'grok-imagine-image-2.0-change2pro': 'grok-imagine-image-2.0',
+};
 
 const MAX_BODY_BYTES = 40 * 1024 * 1024;
 const MAX_PROMPT_CHARS = 4000;
@@ -32,9 +38,9 @@ export async function onRequestPost({ request }) {
     return jsonResponse({ success: false, error: '无法解析表单数据' }, 400);
   }
 
-  const apiKey = String(formData.get('api_key_change2pro_gpt') || '').trim();
+  const apiKey = String(formData.get('api_key') || '').trim();
   const clientModel = String(formData.get('model') || '').trim();
-  const model = String(formData.get('upstream_model') || DEFAULT_IMAGE_MODEL).trim();
+  const model = Object.hasOwn(CLIENT_MODEL_MAP, clientModel) ? CLIENT_MODEL_MAP[clientModel] : '';
   const prompt = String(formData.get('prompt') || '').trim();
   const size = String(formData.get('size') || '1024x1024').trim();
   const n = normalizeCount(formData.get('n'));
@@ -42,8 +48,7 @@ export async function onRequestPost({ request }) {
 
   if (!apiKey) return jsonResponse({ success: false, error: '缺少 Change2pro API Key' }, 400);
   if (apiKey.length > MAX_KEY_CHARS || /\s/.test(apiKey)) return jsonResponse({ success: false, error: 'API Key 格式无效' }, 400);
-  if (clientModel !== ALLOWED_CLIENT_MODEL) return jsonResponse({ success: false, error: '不支持的 Change2pro 图像模型' }, 400);
-  if (!/^[A-Za-z0-9._:-]{1,160}$/.test(model)) return jsonResponse({ success: false, error: 'Change2pro 模型 ID 格式无效' }, 400);
+  if (!model) return jsonResponse({ success: false, error: '不支持的 Change2pro 图像模型' }, 400);
   if (!prompt) return jsonResponse({ success: false, error: '缺少提示词' }, 400);
   if (prompt.length > MAX_PROMPT_CHARS) return jsonResponse({ success: false, error: `提示词不能超过 ${MAX_PROMPT_CHARS} 字` }, 400);
   if (!SIZE_PATTERN.test(size)) return jsonResponse({ success: false, error: '图片尺寸格式无效' }, 400);

@@ -1665,10 +1665,20 @@
                     </div>
                 </div>
                 <div class="form-group">
-                    <label class="form-label">Change2pro API Key</label>
+                    <label class="form-label" for="apiKeyChange2proGpt">Change2pro-GPT API Key</label>
                     <div class="input-group">
-                        <input type="password" class="form-input" id="apiKeyChange2pro" placeholder="请输入 Change2pro API Key">
-                        <button class="btn btn-secondary" onclick="togglePassword('apiKeyChange2pro')" style="width: auto;">👁️</button>
+                        <input type="password" class="form-input" id="apiKeyChange2proGpt" placeholder="用于 gpt-image-2 / gpt-image-2.5 系列">
+                        <button class="btn btn-secondary" type="button" aria-label="显示或隐藏 Change2pro-GPT API Key" onclick="togglePassword('apiKeyChange2proGpt')" style="width: auto;">👁️</button>
+                    </div>
+                    <label class="form-label" for="apiKeyChange2proGemini" style="margin-top:12px;">Change2pro-Gemini API Key</label>
+                    <div class="input-group">
+                        <input type="password" class="form-input" id="apiKeyChange2proGemini" placeholder="用于 nano-banana-2 / nano-banana-pro">
+                        <button class="btn btn-secondary" type="button" aria-label="显示或隐藏 Change2pro-Gemini API Key" onclick="togglePassword('apiKeyChange2proGemini')" style="width: auto;">👁️</button>
+                    </div>
+                    <label class="form-label" for="apiKeyChange2proGrok" style="margin-top:12px;">Change2pro-Grok API Key</label>
+                    <div class="input-group">
+                        <input type="password" class="form-input" id="apiKeyChange2proGrok" placeholder="用于 grok-imagine-image-2.0">
+                        <button class="btn btn-secondary" type="button" aria-label="显示或隐藏 Change2pro-Grok API Key" onclick="togglePassword('apiKeyChange2proGrok')" style="width: auto;">👁️</button>
                     </div>
                     <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
                         <button class="btn btn-secondary" type="button" onclick="refreshChange2proInfo()">查询模型/余额</button>
@@ -1720,6 +1730,11 @@
         const AVAILABLE_MODELS = [
             "gpt-image-2-65535",
             "gpt-image-2-change2pro",
+            "nano-banana-2-change2pro",
+            "nano-banana-pro-change2pro",
+            "gpt-image-2.5-flare-change2pro",
+            "gpt-image-2.5-sunburst-change2pro",
+            "grok-imagine-image-2.0-change2pro",
             "gpt-image-2-grsai",
             "gpt-image-2.5-sunburst",
             "gpt-image-2.5-flare",
@@ -1744,8 +1759,60 @@
             "gpt-image-2.5-sunburst": { provider: "grsai", name: "gpt-image-2.5-sunburst" },
             "gpt-image-2.5-flare": { provider: "grsai", name: "gpt-image-2.5-flare" },
             "gpt-image-2-65535": { provider: "65535", name: "gpt-image-2" },
-            "gpt-image-2-change2pro": { provider: "Change2pro", name: "gpt-image-2" }
+            "gpt-image-2-change2pro": { provider: "Change2pro", name: "gpt-image-2" },
+            "nano-banana-2-change2pro": { provider: "Change2pro", name: "nano-banana-2" },
+            "nano-banana-pro-change2pro": { provider: "Change2pro", name: "nano-banana-pro" },
+            "gpt-image-2.5-flare-change2pro": { provider: "Change2pro", name: "gpt-image-2.5-flare" },
+            "gpt-image-2.5-sunburst-change2pro": { provider: "Change2pro", name: "gpt-image-2.5-sunburst" },
+            "grok-imagine-image-2.0-change2pro": { provider: "Change2pro", name: "grok-imagine-image-2.0" }
         };
+
+        // Change2pro 三把 Key：GPT / Grok 走 OpenAI Images 接口（WxH 尺寸），Gemini 走原生 generateContent（比例 + 1K/2K/4K）
+        const CHANGE2PRO_KEY_KINDS = {
+            gpt: { label: 'Change2pro-GPT', configKey: 'apiKeyChange2proGpt' },
+            gemini: { label: 'Change2pro-Gemini', configKey: 'apiKeyChange2proGemini' },
+            grok: { label: 'Change2pro-Grok', configKey: 'apiKeyChange2proGrok' }
+        };
+        const CHANGE2PRO_GEMINI_MODELS = ["nano-banana-2-change2pro", "nano-banana-pro-change2pro"];
+
+        function isChange2proModel(model) {
+            return getModelProvider(model) === 'Change2pro';
+        }
+
+        function isChange2proGeminiModel(model) {
+            return CHANGE2PRO_GEMINI_MODELS.includes(model);
+        }
+
+        // 返回该 Change2pro 模型需要的 Key 类型：gpt / gemini / grok；非 Change2pro 模型返回空串
+        function getChange2proKeyKind(model) {
+            if (!isChange2proModel(model)) return '';
+            if (isChange2proGeminiModel(model)) return 'gemini';
+            if (getModelName(model).startsWith('grok-')) return 'grok';
+            return 'gpt';
+        }
+
+        // 读取某类 Change2pro Key；GPT Key 兼容旧版单 Key 字段 apiKeyChange2pro
+        function getChange2proApiKey(kind) {
+            const meta = CHANGE2PRO_KEY_KINDS[kind];
+            if (!meta) return '';
+            const saved = globalConfig?.[meta.configKey] || (kind === 'gpt' ? globalConfig?.apiKeyChange2pro : '') || '';
+            return String(saved || document.getElementById(meta.configKey)?.value || '').trim();
+        }
+
+        function fillChange2proKeyInputs(config) {
+            Object.entries(CHANGE2PRO_KEY_KINDS).forEach(([kind, meta]) => {
+                const input = document.getElementById(meta.configKey);
+                if (input) input.value = config?.[meta.configKey] || (kind === 'gpt' ? config?.apiKeyChange2pro : '') || '';
+            });
+        }
+
+        function readChange2proKeyInputs() {
+            const result = {};
+            Object.values(CHANGE2PRO_KEY_KINDS).forEach(meta => {
+                result[meta.configKey] = document.getElementById(meta.configKey)?.value.trim() || '';
+            });
+            return result;
+        }
 
         // 服务商显示顺序
         const MODEL_PROVIDERS = ["grsai", "65535", "Change2pro"];
@@ -1794,7 +1861,7 @@
 
         function isGptImageModel(model) {
             return model === 'gpt-image-2-65535'
-                || model === 'gpt-image-2-change2pro'
+                || (isChange2proModel(model) && !isChange2proGeminiModel(model))
                 || model === 'gpt-image-2-grsai'
                 || GPT_IMAGE_25_MODELS.includes(model);
         }
@@ -2685,24 +2752,25 @@
             
             const selectedModel = document.getElementById(`model-${windowId}`).value;
             const is65535Model = selectedModel === 'gpt-image-2-65535';
-            const isChange2proModel = selectedModel === 'gpt-image-2-change2pro';
+            const usesChange2pro = isChange2proModel(selectedModel);
             const usesMappedImageSize = isGptImageModel(selectedModel);
             const selectedImageSize = getFixedBananaModelSize(selectedModel) || window.selectedSize;
             const mappedImageSize = usesMappedImageSize ? getOpenAIImageSize(selectedImageSize, window.selectedRatio) : selectedImageSize;
             const grsaiApiKey = globalConfig.apiKey || document.getElementById('apiKey').value.trim();
             const apiKey65535 = globalConfig.apiKey65535 || document.getElementById('apiKey65535')?.value.trim() || '';
-            const apiKeyChange2pro = globalConfig.apiKeyChange2pro || document.getElementById('apiKeyChange2pro').value.trim();
+            const change2proKeyKind = getChange2proKeyKind(selectedModel);
+            const apiKeyChange2pro = change2proKeyKind ? getChange2proApiKey(change2proKeyKind) : '';
             if (is65535Model && !apiKey65535) {
                 showToast('请先在设置中配置 65535 API Key', 'error');
                 openSettings();
                 return;
             }
-            if (isChange2proModel && !apiKeyChange2pro) {
-                showToast('请先在设置中配置 Change2pro API Key', 'error');
+            if (usesChange2pro && !apiKeyChange2pro) {
+                showToast(`请先在设置中配置 ${CHANGE2PRO_KEY_KINDS[change2proKeyKind].label} API Key`, 'error');
                 openSettings();
                 return;
             }
-            if (!is65535Model && !isChange2proModel && !grsaiApiKey) {
+            if (!is65535Model && !usesChange2pro && !grsaiApiKey) {
                 showToast('请先在设置中配置 GRSAI API Key', 'error');
                 openSettings();
                 return;
@@ -2868,7 +2936,7 @@
             globalConfig = {
                 apiKey: document.getElementById('apiKey').value,
                 apiKey65535: document.getElementById('apiKey65535')?.value || '',
-                apiKeyChange2pro: document.getElementById('apiKeyChange2pro').value,
+                ...readChange2proKeyInputs(),
             };
             
             localStorage.setItem('grsai_multiwindow_config', JSON.stringify(globalConfig));
@@ -2896,7 +2964,7 @@
                     document.getElementById('apiKey').value = globalConfig.apiKey || '';
                     const apiKey65535Input = document.getElementById('apiKey65535');
                     if (apiKey65535Input) apiKey65535Input.value = globalConfig.apiKey65535 || globalConfig.api_key_65535 || '';
-                    document.getElementById('apiKeyChange2pro').value = globalConfig.apiKeyChange2pro || '';
+                    fillChange2proKeyInputs(globalConfig);
                 } catch (e) {
                     console.error('加载配置失败:', e);
                 }

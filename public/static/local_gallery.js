@@ -369,6 +369,9 @@
                 });
             }
             if (provider === 'change2pro') {
+                if (isChange2proGeminiModel(model)) {
+                    return this.generateChange2proGemini({ apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask });
+                }
                 return this.generateChange2proProxy({ apiKey, prompt, model, imageSize, referenceHashes, onProviderTask });
             }
             const apiModel = model === 'gpt-image-2-grsai' ? 'gpt-image-2-vip' : model;
@@ -450,9 +453,9 @@
         async generateChange2proProxy({ apiKey, prompt, model, imageSize, referenceHashes, onProviderTask }) {
             const assets = await this.getReferenceAssets(referenceHashes);
             const formData = new FormData();
-            formData.append('api_key_change2pro_gpt', apiKey);
-            formData.append('model', 'gpt-image-2-change2pro');
-            formData.append('upstream_model', model && model !== 'gpt-image-2-change2pro' ? model : 'gpt-image-2');
+            formData.append('api_key', apiKey);
+            // 只传内部模型 ID，上游模型 ID 由服务端白名单映射，避免客户端任意指定
+            formData.append('model', model || 'gpt-image-2-change2pro');
             formData.append('prompt', prompt);
             formData.append('size', imageSize || '1024x1024');
             formData.append('n', '1');
@@ -470,6 +473,28 @@
             const data = result.data || [];
             if (!data.length) throw new Error('Change2pro returned an empty result');
             return Promise.all(data.map(item => ImageAssetService.resultToBlob(item, 'image/jpeg')));
+        },
+
+        // Change2pro Gemini 原生接口（nano-banana 系列），由同源代理 /api/change2pro/gemini 转发
+        async generateChange2proGemini({ apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask }) {
+            const assets = await this.getReferenceAssets(referenceHashes);
+            const formData = new FormData();
+            formData.append('api_key', apiKey);
+            formData.append('model', model);
+            formData.append('prompt', prompt);
+            formData.append('image_size', imageSize || '1K');
+            formData.append('aspect_ratio', aspectRatio || 'auto');
+            assets.forEach(asset => {
+                const filename = asset.originalName || `${asset.hash}.${ImageAssetService.extensionFromMime(asset.mimeType)}`;
+                formData.append('image', asset.blob, filename);
+            });
+            if (typeof onProviderTask === 'function') {
+                try { onProviderTask({ providerTaskId: '', providerHost: CHANGE2PRO_BASE_URL }); } catch (callbackError) { console.warn('provider task callback failed:', callbackError); }
+            }
+            const result = await this.fetchJson('/api/change2pro/gemini', { method: 'POST', body: formData });
+            const data = result.data || [];
+            if (!data.length) throw new Error('Change2pro Gemini 返回了空结果');
+            return Promise.all(data.map(item => ImageAssetService.resultToBlob(item, 'image/png')));
         },
 
         async generateOpenAIImages({ apiKey, prompt, model, imageSize, referenceHashes, baseUrl, imageFieldName, includeOpenAIOptions, providerLabel }) {
@@ -1330,7 +1355,7 @@
                 document.getElementById('apiKey').value = globalConfig.apiKey || '';
                 const apiKey65535Input = document.getElementById('apiKey65535');
                 if (apiKey65535Input) apiKey65535Input.value = globalConfig.apiKey65535 || globalConfig.apiKey_65535 || '';
-                document.getElementById('apiKeyChange2pro').value = globalConfig.apiKeyChange2pro || '';
+                fillChange2proKeyInputs(globalConfig);
             } catch (error) {
                 console.error('加载本地设置失败:', error);
                 showToast('加载本地设置失败，请检查浏览器存储权限', 'error');
@@ -1343,7 +1368,7 @@
         globalConfig = {
             apiKey: document.getElementById('apiKey').value,
             apiKey65535: document.getElementById('apiKey65535')?.value || '',
-            apiKeyChange2pro: document.getElementById('apiKeyChange2pro').value,
+            ...readChange2proKeyInputs(),
             grsaiHost: globalConfig.grsaiHost
         };
         try {
@@ -1355,39 +1380,55 @@
         }
     }
 
+    // 分别查询三把 Change2pro Key（GPT / Gemini / Grok）的模型目录与余额，未填写的 Key 跳过
     async function refreshChange2proInfo() {
-        const input = document.getElementById('apiKeyChange2pro');
         const modelsStatus = document.getElementById('change2proModelsStatus');
         const usageStatus = document.getElementById('change2proUsageStatus');
-        const apiKey = input?.value.trim() || globalConfig.apiKeyChange2pro || '';
-        if (!apiKey) {
-            showToast('请先输入 Change2pro API Key', 'error');
-            input?.focus();
+        const inputKeys = readChange2proKeyInputs();
+        const entries = Object.entries(CHANGE2PRO_KEY_KINDS)
+            .map(([kind, meta]) => ({ kind, meta, apiKey: inputKeys[meta.configKey] || getChange2proApiKey(kind) }))
+            .filter(entry => entry.apiKey);
+        if (!entries.length) {
+            showToast('请先输入至少一个 Change2pro API Key', 'error');
+            document.getElementById(CHANGE2PRO_KEY_KINDS.gpt.configKey)?.focus();
             return;
         }
-        if (modelsStatus) modelsStatus.textContent = '正在查询 Change2pro 模型…';
+        if (modelsStatus) {
+            modelsStatus.style.whiteSpace = 'pre-line';
+            modelsStatus.textContent = '正在查询 Change2pro 模型…';
+        }
         if (usageStatus) usageStatus.textContent = '正在查询余额…';
-        const headers = { Authorization: `Bearer ${apiKey}` };
-        const [modelsResult, usageResult] = await Promise.allSettled([
-            fetch('/api/change2pro/models', { headers, cache: 'no-store' }).then(response => response.json().then(payload => ({ response, payload }))),
-            fetch('/api/change2pro/usage', { headers, cache: 'no-store' }).then(response => response.json().then(payload => ({ response, payload })))
-        ]);
-        if (modelsResult.status === 'fulfilled' && modelsResult.value.response.ok && modelsResult.value.payload?.success) {
-            const models = Array.isArray(modelsResult.value.payload.data) ? modelsResult.value.payload.data : [];
-            const ids = models.map(item => typeof item === 'string' ? item : item?.id).filter(Boolean);
-            if (modelsStatus) modelsStatus.textContent = ids.length ? `可用模型（${ids.length}）：${ids.join('、')}` : '接口返回 0 个模型；当前生图默认使用 gpt-image-2。';
-        } else {
-            const payload = modelsResult.status === 'fulfilled' ? modelsResult.value.payload : null;
-            if (modelsStatus) modelsStatus.textContent = `模型查询失败：${payload?.error || 'Change2pro 请求失败'}`;
-        }
-        if (usageResult.status === 'fulfilled' && usageResult.value.response.ok && usageResult.value.payload?.success) {
-            const data = usageResult.value.payload.data || {};
-            const remaining = data.remaining == null ? '未知' : `${data.remaining} ${data.unit || 'USD'}`;
-            if (usageStatus) usageStatus.textContent = `余额：${remaining} · ${data.is_active ? '可用' : '未激活'}`;
-        } else {
-            const payload = usageResult.status === 'fulfilled' ? usageResult.value.payload : null;
-            if (usageStatus) usageStatus.textContent = `余额查询失败：${payload?.error || 'Change2pro 请求失败'}`;
-        }
+
+        const fetchInfo = (path, apiKey) => fetch(path, { headers: { Authorization: `Bearer ${apiKey}` }, cache: 'no-store' })
+            .then(response => response.json().then(payload => ({ response, payload })));
+        const reports = await Promise.all(entries.map(async ({ meta, apiKey }) => {
+            const [modelsResult, usageResult] = await Promise.allSettled([
+                fetchInfo('/api/change2pro/models', apiKey),
+                fetchInfo('/api/change2pro/usage', apiKey)
+            ]);
+            let modelsText;
+            if (modelsResult.status === 'fulfilled' && modelsResult.value.response.ok && modelsResult.value.payload?.success) {
+                const models = Array.isArray(modelsResult.value.payload.data) ? modelsResult.value.payload.data : [];
+                const ids = models.map(item => typeof item === 'string' ? item : item?.id).filter(Boolean);
+                modelsText = ids.length ? `可用模型（${ids.length}）：${ids.join('、')}` : '接口返回 0 个模型';
+            } else {
+                const payload = modelsResult.status === 'fulfilled' ? modelsResult.value.payload : null;
+                modelsText = `模型查询失败：${payload?.error || 'Change2pro 请求失败'}`;
+            }
+            let usageText;
+            if (usageResult.status === 'fulfilled' && usageResult.value.response.ok && usageResult.value.payload?.success) {
+                const data = usageResult.value.payload.data || {};
+                const remaining = data.remaining == null ? '未知' : `${data.remaining} ${data.unit || 'USD'}`;
+                usageText = `余额 ${remaining} · ${data.is_active ? '可用' : '未激活'}`;
+            } else {
+                const payload = usageResult.status === 'fulfilled' ? usageResult.value.payload : null;
+                usageText = `余额查询失败：${payload?.error || 'Change2pro 请求失败'}`;
+            }
+            return { label: meta.label, modelsText, usageText };
+        }));
+
+        if (modelsStatus) modelsStatus.textContent = reports.map(r => `${r.label}：${r.modelsText}`).join('\n');
+        if (usageStatus) usageStatus.textContent = reports.map(r => `${r.label}：${r.usageText}`).join('；');
     }
 
     async function startGeneration(windowId) {
@@ -1396,7 +1437,7 @@
         if (!win) return;
         const selectedModel = document.getElementById(`model-${windowId}`).value;
         const is65535Model = selectedModel === 'gpt-image-2-65535';
-        const isChange2proModel = selectedModel === 'gpt-image-2-change2pro';
+        const usesChange2pro = isChange2proModel(selectedModel);
         const usesMappedImageSize = isGptImageModel(selectedModel);
         const selectedImageSize = getFixedBananaModelSize(selectedModel) || win.selectedSize;
         const selectedAspectRatio = win.selectedRatio;
@@ -1405,19 +1446,20 @@
             : selectedImageSize;
         const grsaiApiKey = globalConfig.apiKey || document.getElementById('apiKey').value.trim();
         const apiKey65535 = globalConfig.apiKey65535 || document.getElementById('apiKey65535')?.value.trim() || '';
-        const apiKeyChange2pro = globalConfig.apiKeyChange2pro || document.getElementById('apiKeyChange2pro').value.trim();
+        const change2proKeyKind = getChange2proKeyKind(selectedModel);
+        const apiKeyChange2pro = change2proKeyKind ? getChange2proApiKey(change2proKeyKind) : '';
 
         if (is65535Model && !apiKey65535) {
             showToast('Please configure 65535 API Key in settings first.', 'error');
             openSettings();
             return;
         }
-        if (isChange2proModel && !apiKeyChange2pro) {
-            showToast('Please configure Change2pro API Key in settings first.', 'error');
+        if (usesChange2pro && !apiKeyChange2pro) {
+            showToast(`请先在设置中配置 ${CHANGE2PRO_KEY_KINDS[change2proKeyKind].label} API Key`, 'error');
             openSettings();
             return;
         }
-        if (!is65535Model && !isChange2proModel && !grsaiApiKey) {
+        if (!is65535Model && !usesChange2pro && !grsaiApiKey) {
             showToast('Please configure GRSAI API Key in settings first.', 'error');
             openSettings();
             return;
@@ -1462,8 +1504,8 @@
         const generateBtn = document.getElementById(`generateBtn-${windowId}`);
         generateBtn.classList.add('loading');
 
-        const provider = is65535Model ? '65535' : (isChange2proModel ? 'change2pro' : 'grsai');
-        const apiKey = is65535Model ? apiKey65535 : (isChange2proModel ? apiKeyChange2pro : grsaiApiKey);
+        const provider = is65535Model ? '65535' : (usesChange2pro ? 'change2pro' : 'grsai');
+        const apiKey = is65535Model ? apiKey65535 : (usesChange2pro ? apiKeyChange2pro : grsaiApiKey);
         const concurrent = Math.max(1, Math.min(count, GENERATION_CONCURRENCY));
         const requestAspectRatio = usesMappedImageSize ? mappedImageSize : selectedAspectRatio;
         let cursor = 0;
