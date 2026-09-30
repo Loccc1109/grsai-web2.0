@@ -1678,29 +1678,6 @@
                 </div>
             </div>
 
-            <div class="settings-section">
-                <div class="settings-section-title">🎯 模型配置</div>
-                <div id="modelConfigGroups" style="display: flex; flex-direction: column; gap: 16px;">
-                    <!-- 模型分组将由 JS 动态生成 -->
-                </div>
-            </div>
-
-            <div class="settings-section">
-                <div class="settings-section-title">📁 输出配置</div>
-                <div class="form-group">
-                    <label class="form-label">保存地址</label>
-                    <input type="text" class="form-input" id="outputDir" value="outputs" placeholder="输出文件夹路径">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">文件名前缀</label>
-                    <input type="text" class="form-input" id="filenamePrefix" value="grsai" placeholder="文件名前缀">
-                </div>
-                <div class="form-group">
-                    <label class="form-label">并发限制</label>
-                    <input type="number" class="form-input" id="concurrentLimit" value="5" min="1" max="10">
-                </div>
-            </div>
-
             <button class="btn btn-primary" onclick="saveSettings()">
                 💾 保存设置
             </button>
@@ -1753,23 +1730,44 @@
             "nano-banana-pro"
         ];
         
-        const MODEL_LABELS = {
-            "nano-banana-2": "nano-banana-2[grsai]",
-            "nano-banana-2-cl": "nano-banana-2-cl[grsai]",
-            "nano-banana-2-2k-cl": "nano-banana-2-2k-cl[grsai]",
-            "nano-banana-2-4k-cl": "nano-banana-2-4k-cl[grsai]",
-            "nano-banana-pro": "nano-banana-pro[grsai]",
-            "gpt-image-2-65535": "gpt-image-2[65535]",
-            "gpt-image-2-grsai": "gpt-image-2[grsai]",
-            "gpt-image-2.5-sunburst": "gpt-image-2.5-sunburst[grsai]",
-            "gpt-image-2.5-flare": "gpt-image-2.5-flare[grsai]",
-            "gpt-image-2-change2pro": "gpt-image-2[Change2pro]"
+        // 生成并发数（固定值，不再在设置中配置）
+        const GENERATION_CONCURRENCY = 10;
+
+        // 模型目录：内部模型 ID -> 服务商 + 展示名称（ID 保持不变，保证接口与历史数据兼容）
+        const MODEL_CATALOG = {
+            "nano-banana-2": { provider: "grsai", name: "nano-banana-2" },
+            "nano-banana-2-cl": { provider: "grsai", name: "nano-banana-2-cl" },
+            "nano-banana-2-2k-cl": { provider: "grsai", name: "nano-banana-2-2k-cl" },
+            "nano-banana-2-4k-cl": { provider: "grsai", name: "nano-banana-2-4k-cl" },
+            "nano-banana-pro": { provider: "grsai", name: "nano-banana-pro" },
+            "gpt-image-2-grsai": { provider: "grsai", name: "gpt-image-2" },
+            "gpt-image-2.5-sunburst": { provider: "grsai", name: "gpt-image-2.5-sunburst" },
+            "gpt-image-2.5-flare": { provider: "grsai", name: "gpt-image-2.5-flare" },
+            "gpt-image-2-65535": { provider: "65535", name: "gpt-image-2" },
+            "gpt-image-2-change2pro": { provider: "Change2pro", name: "gpt-image-2" }
         };
+
+        // 服务商显示顺序
+        const MODEL_PROVIDERS = ["grsai", "65535", "Change2pro"];
 
         const GPT_IMAGE_25_MODELS = ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"];
 
+        function getModelProvider(model) {
+            return MODEL_CATALOG[model]?.provider || '';
+        }
+
+        function getModelName(model) {
+            return MODEL_CATALOG[model]?.name || model;
+        }
+
+        // 单行展示格式：服务商----模型
         function getModelLabel(model) {
-            return MODEL_LABELS[model] || model;
+            const entry = MODEL_CATALOG[model];
+            return entry ? `${entry.provider}----${entry.name}` : model;
+        }
+
+        function getModelsByProvider(provider) {
+            return AVAILABLE_MODELS.filter(model => getModelProvider(model) === provider);
         }
 
         const OPENAI_SIZE_MAP = {
@@ -1801,16 +1799,6 @@
                 || GPT_IMAGE_25_MODELS.includes(model);
         }
 
-        function resolveEnabledModels(savedEnabledModels, useSavedSelection = false, migrateGptImage25 = false) {
-            const validSavedModels = Array.isArray(savedEnabledModels)
-                ? savedEnabledModels.filter(model => AVAILABLE_MODELS.includes(model))
-                : [];
-            if (!useSavedSelection || !validSavedModels.length) return [...AVAILABLE_MODELS];
-            if (!migrateGptImage25) return validSavedModels;
-            const migratedModels = new Set([...validSavedModels, ...GPT_IMAGE_25_MODELS]);
-            return AVAILABLE_MODELS.filter(model => migratedModels.has(model));
-        }
-
         const FIXED_BANANA_MODEL_SIZES = {
             'nano-banana-2-cl': '1K',
             'nano-banana-2-2k-cl': '2K',
@@ -1826,142 +1814,52 @@
             return modelSelect ? modelSelect.value : '';
         }
 
-        let enabledModels = [];
+        // 所有模型始终可用（已移除“模型配置”）
 
-        // 渲染设置中的模型配置列表
-        function renderModelConfigList() {
-            const container = document.getElementById('modelConfigGroups');
-            container.innerHTML = '';
-            
-            // 添加所有模型全选/反选控件
-            const selectAllDiv = document.createElement('div');
-            selectAllDiv.style.marginBottom = '12px';
-            selectAllDiv.style.display = 'flex';
-            selectAllDiv.style.alignItems = 'center';
-            selectAllDiv.style.gap = '8px';
-            
-            const isAllSelected = enabledModels.length === AVAILABLE_MODELS.length;
-            
-            selectAllDiv.innerHTML = `
-                <input type="checkbox" id="config-model-all-multi" value="" ${isAllSelected ? 'checked' : ''} onchange="toggleAllModels(this.checked)">
-                <label for="config-model-all-multi" style="font-size: 14px; font-weight: bold; cursor: pointer; color: #c8cad0;">全选/取消全选</label>
-            `;
-            container.appendChild(selectAllDiv);
-            
-            for (const models of [AVAILABLE_MODELS]) {
-                const groupDiv = document.createElement('div');
-                groupDiv.style.background = 'rgba(255, 255, 255, 0.055)';
-                groupDiv.style.border = '1px solid var(--line)';
-                groupDiv.style.borderRadius = '8px';
-                groupDiv.style.padding = '12px';
-                
-                const groupTitle = document.createElement('div');
-                groupTitle.style.fontSize = '14px';
-                groupTitle.style.fontWeight = '600';
-                groupTitle.style.color = 'var(--text)';
-                groupTitle.style.marginBottom = '12px';
-                groupTitle.style.borderBottom = '1px solid var(--line)';
-                groupTitle.style.paddingBottom = '8px';
-                groupTitle.textContent = '模型列表';
-                groupDiv.appendChild(groupTitle);
-                
-                if (models.length === 0) {
-                    const emptyNote = document.createElement('div');
-                    emptyNote.style.fontSize = '12px';
-                    emptyNote.style.color = '#6b7280';
-                    emptyNote.textContent = '暂无可用模型配置';
-                    groupDiv.appendChild(emptyNote);
-                } else {
-                    const modelsGrid = document.createElement('div');
-                    modelsGrid.style.display = 'grid';
-                    modelsGrid.style.gridTemplateColumns = 'repeat(2, minmax(0, 1fr))';
-                    modelsGrid.style.gap = '12px';
-                    
-                    models.forEach(model => {
-                        const isChecked = enabledModels.includes(model);
-                        const item = document.createElement('div');
-                        item.style.display = 'flex';
-                        item.style.alignItems = 'center';
-                        item.style.gap = '8px';
-                        
-                        item.innerHTML = `
-                            <input type="checkbox" id="config-model-${model}" value="${model}" ${isChecked ? 'checked' : ''} onchange="updateEnabledModels()">
-                            <label for="config-model-${model}" style="font-size: 13px; cursor: pointer;">${getModelLabel(model)}</label>
-                        `;
-                        modelsGrid.appendChild(item);
-                    });
-                    groupDiv.appendChild(modelsGrid);
-                }
-                container.appendChild(groupDiv);
-            }
-        }
-        
-        // 更新启用模型列表
-        function updateEnabledModels() {
-            const checkboxes = document.querySelectorAll('#modelConfigGroups input[type="checkbox"]');
-            enabledModels = Array.from(checkboxes)
-                .filter(cb => cb.checked && AVAILABLE_MODELS.includes(cb.value))
-                .map(cb => cb.value);
-            globalConfig.modelSelectionExplicit = true;
-            
-            // 如果全部取消勾选，强制保留一个
-            if (enabledModels.length === 0 && AVAILABLE_MODELS.length > 0) {
-                enabledModels = [AVAILABLE_MODELS[0]];
-                showToast('至少需要保留一个模型', 'error');
-                renderModelConfigList();
-            }
-            
-            // 更新所有打开的窗口的模型列表
-            Object.values(windows).forEach(win => {
-                if (win.element) {
-                    renderModelOptionsForWindow(win.id);
-                }
-            });
-        }
-        
-        // 切换所有模型状态
-        function toggleAllModels(checked) {
-            globalConfig.modelSelectionExplicit = true;
-            if (checked) {
-                enabledModels = [...AVAILABLE_MODELS];
-            } else {
-                // 至少保留一个模型
-                enabledModels = [AVAILABLE_MODELS[0]];
-                showToast('至少需要保留一个模型', 'info');
-            }
-            renderModelConfigList();
-            
-            // 更新所有打开的窗口的模型列表
-            Object.values(windows).forEach(win => {
-                if (win.element) {
-                    renderModelOptionsForWindow(win.id);
-                }
-            });
-        }
-
-        // 为特定窗口渲染模型选项
-        function renderModelOptionsForWindow(windowId) {
+        // 服务商变化时，刷新该窗口的模型列表
+        function renderModelListForProvider(windowId, preferredModel) {
+            const providerSelect = document.getElementById(`modelProvider-${windowId}`);
             const modelSelect = document.getElementById(`model-${windowId}`);
-            if (!modelSelect) return;
-            
-            const currentSelected = modelSelect.value;
+            if (!providerSelect || !modelSelect) return;
+
+            const models = getModelsByProvider(providerSelect.value);
             modelSelect.innerHTML = '';
-            
-            enabledModels = enabledModels.filter(model => AVAILABLE_MODELS.includes(model));
-            enabledModels.forEach(model => {
+            models.forEach(model => {
                 const option = document.createElement('option');
                 option.value = model;
-                option.textContent = getModelLabel(model);
+                option.textContent = getModelName(model);
                 modelSelect.appendChild(option);
             });
-            
-            if (enabledModels.includes(currentSelected)) {
-                modelSelect.value = currentSelected;
-            } else if (enabledModels.length > 0) {
-                modelSelect.value = enabledModels[0];
+
+            if (models.includes(preferredModel)) {
+                modelSelect.value = preferredModel;
+            } else if (models.length > 0) {
+                modelSelect.value = models[0];
             }
-            
             modelSelect.dispatchEvent(new Event('change'));
+        }
+
+        // 为特定窗口渲染“服务商 + 模型”两级选项
+        function renderModelOptionsForWindow(windowId, preferredModel) {
+            const providerSelect = document.getElementById(`modelProvider-${windowId}`);
+            const modelSelect = document.getElementById(`model-${windowId}`);
+            if (!providerSelect || !modelSelect) return;
+
+            const targetModel = AVAILABLE_MODELS.includes(preferredModel)
+                ? preferredModel
+                : (AVAILABLE_MODELS.includes(modelSelect.value) ? modelSelect.value : AVAILABLE_MODELS[0]);
+
+            const providers = MODEL_PROVIDERS.filter(provider => getModelsByProvider(provider).length > 0);
+            providerSelect.innerHTML = '';
+            providers.forEach(provider => {
+                const option = document.createElement('option');
+                option.value = provider;
+                option.textContent = provider;
+                providerSelect.appendChild(option);
+            });
+
+            providerSelect.value = getModelProvider(targetModel) || providers[0] || '';
+            renderModelListForProvider(windowId, targetModel);
         }
 
         // 窗口拖动状态
@@ -2196,9 +2094,14 @@
 
                 <div class="section">
                     <div class="section-title">🎯 模型选择</div>
-                    <select class="form-select" id="model-${windowId}">
-                        <!-- 选项将由 JS 动态生成 -->
-                    </select>
+                    <div style="display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); gap: 8px;">
+                        <select class="form-select" id="modelProvider-${windowId}" aria-label="服务商" onchange="renderModelListForProvider(${windowId})">
+                            <!-- 服务商选项将由 JS 动态生成 -->
+                        </select>
+                        <select class="form-select" id="model-${windowId}" aria-label="模型">
+                            <!-- 模型选项将由 JS 动态生成 -->
+                        </select>
+                    </div>
                 </div>
 
                 <button class="btn btn-primary" id="generateBtn-${windowId}" onclick="startGeneration(${windowId})">
@@ -2829,9 +2732,9 @@
                 model: selectedModel,
                 image_size: mappedImageSize,
                 aspect_ratio: usesMappedImageSize ? mappedImageSize : window.selectedRatio,
-                output_dir: globalConfig.outputDir || 'outputs',
-                filename_prefix: globalConfig.filenamePrefix || 'grsai',
-                concurrent_limit: globalConfig.concurrentLimit || 5,
+                output_dir: 'outputs',
+                filename_prefix: 'grsai',
+                concurrent_limit: GENERATION_CONCURRENCY,
                 reference_images: window.referenceImages,
                 is_multi_prompt: false
             };
@@ -2966,12 +2869,6 @@
                 apiKey: document.getElementById('apiKey').value,
                 apiKey65535: document.getElementById('apiKey65535')?.value || '',
                 apiKeyChange2pro: document.getElementById('apiKeyChange2pro').value,
-                outputDir: document.getElementById('outputDir').value,
-                filenamePrefix: document.getElementById('filenamePrefix').value,
-                concurrentLimit: document.getElementById('concurrentLimit').value,
-                enabledModels: enabledModels.filter(model => AVAILABLE_MODELS.includes(model)),
-                modelSelectionExplicit: Boolean(globalConfig.modelSelectionExplicit),
-                gptImage25ModelsMigrated: true
             };
             
             localStorage.setItem('grsai_multiwindow_config', JSON.stringify(globalConfig));
@@ -3000,23 +2897,10 @@
                     const apiKey65535Input = document.getElementById('apiKey65535');
                     if (apiKey65535Input) apiKey65535Input.value = globalConfig.apiKey65535 || globalConfig.api_key_65535 || '';
                     document.getElementById('apiKeyChange2pro').value = globalConfig.apiKeyChange2pro || '';
-                    document.getElementById('outputDir').value = globalConfig.outputDir || 'outputs';
-                    document.getElementById('filenamePrefix').value = globalConfig.filenamePrefix || 'grsai';
-                    document.getElementById('concurrentLimit').value = globalConfig.concurrentLimit || 5;
-                    
-                    const savedEnabledModels = globalConfig.enabledModels;
-                    const useSavedSelection = Boolean(globalConfig.modelSelectionExplicit);
-                    const migrateGptImage25 = useSavedSelection && !globalConfig.gptImage25ModelsMigrated;
-                    enabledModels = resolveEnabledModels(savedEnabledModels, useSavedSelection, migrateGptImage25);
-                    if (migrateGptImage25) globalConfig.gptImage25ModelsMigrated = true;
                 } catch (e) {
                     console.error('加载配置失败:', e);
-                    enabledModels = [...AVAILABLE_MODELS];
                 }
-            } else {
-                enabledModels = [...AVAILABLE_MODELS];
             }
-            renderModelConfigList();
         }
 
         // 点击设置模态框外部关闭
@@ -3038,8 +2922,6 @@
         window.addEventListener('DOMContentLoaded', () => {
             console.log('GRSAI 多窗口版已加载');
             loadSettings();
-            // 确保加载完设置后全局模型被填充
-            updateEnabledModels();
             // 自动创建第一个窗口
             createNewWindow();
             // 强制所有已创建的窗口应用当前模型

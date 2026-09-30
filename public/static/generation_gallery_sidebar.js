@@ -763,12 +763,19 @@
         return entries.sort((a, b) => (b.time || 0) - (a.time || 0));
     }
 
+    // 模型单行展示：服务商----模型（兼容未加载 getModelLabel 的情况）
+    function formatModelLabel(model) {
+        if (!model) return '未知模型';
+        return typeof window.getModelLabel === 'function' ? window.getModelLabel(model) : model;
+    }
+
     function matchesSearch(entry) {
         if (!searchTerm) return true;
         const generation = entry.generation;
         const haystack = [
             generation.prompt,
             generation.model,
+            formatModelLabel(generation.model),
             generation.imageSize,
             generation.aspectRatio,
             generation.id,
@@ -825,7 +832,7 @@
             <div>
                 <div class="generation-gallery-card-title">${escapeHtml(generation.prompt || '无提示词')}</div>
                 <div class="generation-gallery-card-meta">
-                    ${escapeHtml(generation.model || '未知模型')}<br>
+                    ${escapeHtml(formatModelLabel(generation.model))}<br>
                     ${escapeHtml(formatParams(generation))}<br>
                     ${escapeHtml(formatTime(entry.time))}
                 </div>
@@ -891,7 +898,7 @@
                     <div class="generation-detail-section generation-detail-grid">
                         <div class="generation-detail-box">
                             <div class="generation-detail-label">模型选择</div>
-                            <div class="generation-detail-value">${escapeHtml(generation.model || '未知模型')}</div>
+                            <div class="generation-detail-value">${escapeHtml(formatModelLabel(generation.model))}</div>
                         </div>
                         <div class="generation-detail-box">
                             <div class="generation-detail-label">生成时间</div>

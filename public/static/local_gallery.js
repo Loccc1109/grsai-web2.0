@@ -1070,17 +1070,9 @@
     }
 
     function setWindowModel(windowId, model) {
-        if (!model) return;
-        if (!enabledModels.includes(model) && AVAILABLE_MODELS.includes(model)) {
-            enabledModels.push(model);
-            try { renderModelConfigList(); } catch (error) { console.warn(error); }
-        }
-        renderModelOptionsForWindow(windowId);
-        const select = document.getElementById(`model-${windowId}`);
-        if (select && AVAILABLE_MODELS.includes(model)) {
-            select.value = model;
-            select.dispatchEvent(new Event('change'));
-        }
+        if (!model || !AVAILABLE_MODELS.includes(model)) return;
+        // 同步切换服务商与模型两级下拉框
+        renderModelOptionsForWindow(windowId, model);
     }
 
     function selectButtonByData(containerSelector, attr, value) {
@@ -1320,20 +1312,8 @@
         await settingsLoadPromise;
     }
 
-    function resolveEnabledModels(savedEnabledModels, useSavedSelection = false, migrateGptImage25 = false) {
-        const validSavedModels = Array.isArray(savedEnabledModels)
-            ? savedEnabledModels.filter(model => AVAILABLE_MODELS.includes(model))
-            : [];
-        if (!useSavedSelection || !validSavedModels.length) return [...AVAILABLE_MODELS];
-        if (!migrateGptImage25) return validSavedModels;
-        const migratedModels = new Set([...validSavedModels, ...GPT_IMAGE_25_MODELS]);
-        return AVAILABLE_MODELS.filter(model => migratedModels.has(model));
-    }
-
     function loadSettings() {
         if (settingsLoadPromise) return settingsLoadPromise;
-        enabledModels = [...AVAILABLE_MODELS];
-        try { renderModelConfigList(); } catch (error) { console.warn(error); }
         settingsLoadPromise = (async () => {
             try {
                 await LocalGalleryDB.init();
@@ -1351,20 +1331,8 @@
                 const apiKey65535Input = document.getElementById('apiKey65535');
                 if (apiKey65535Input) apiKey65535Input.value = globalConfig.apiKey65535 || globalConfig.apiKey_65535 || '';
                 document.getElementById('apiKeyChange2pro').value = globalConfig.apiKeyChange2pro || '';
-                document.getElementById('outputDir').value = globalConfig.outputDir || 'outputs';
-                document.getElementById('filenamePrefix').value = globalConfig.filenamePrefix || 'grsai';
-                document.getElementById('concurrentLimit').value = globalConfig.concurrentLimit || 5;
-                const savedEnabledModels = globalConfig.enabledModels;
-                const useSavedSelection = Boolean(globalConfig.modelSelectionExplicit);
-                const migrateGptImage25 = useSavedSelection && !globalConfig.gptImage25ModelsMigrated;
-                enabledModels = resolveEnabledModels(savedEnabledModels, useSavedSelection, migrateGptImage25);
-                if (migrateGptImage25) globalConfig.gptImage25ModelsMigrated = true;
-                renderModelConfigList();
-                Object.values(windows).forEach(win => win.element && renderModelOptionsForWindow(win.id));
             } catch (error) {
                 console.error('加载本地设置失败:', error);
-                enabledModels = [...AVAILABLE_MODELS];
-                renderModelConfigList();
                 showToast('加载本地设置失败，请检查浏览器存储权限', 'error');
             }
         })();
@@ -1376,12 +1344,6 @@
             apiKey: document.getElementById('apiKey').value,
             apiKey65535: document.getElementById('apiKey65535')?.value || '',
             apiKeyChange2pro: document.getElementById('apiKeyChange2pro').value,
-            outputDir: document.getElementById('outputDir').value,
-            filenamePrefix: document.getElementById('filenamePrefix').value,
-            concurrentLimit: document.getElementById('concurrentLimit').value,
-            enabledModels: enabledModels.filter(model => AVAILABLE_MODELS.includes(model)),
-            modelSelectionExplicit: Boolean(globalConfig.modelSelectionExplicit),
-            gptImage25ModelsMigrated: true,
             grsaiHost: globalConfig.grsaiHost
         };
         try {
@@ -1502,7 +1464,7 @@
 
         const provider = is65535Model ? '65535' : (isChange2proModel ? 'change2pro' : 'grsai');
         const apiKey = is65535Model ? apiKey65535 : (isChange2proModel ? apiKeyChange2pro : grsaiApiKey);
-        const concurrent = Math.max(1, Math.min(count, parseInt(globalConfig.concurrentLimit, 10) || 1));
+        const concurrent = Math.max(1, Math.min(count, GENERATION_CONCURRENCY));
         const requestAspectRatio = usesMappedImageSize ? mappedImageSize : selectedAspectRatio;
         let cursor = 0;
 
@@ -1617,15 +1579,6 @@
         window.startGeneration = startGeneration;
         window.pollTaskStatus = pollTaskStatus;
         window.updateTaskStatus = updateTaskStatus;
-        const originalUpdateEnabledModels = window.updateEnabledModels;
-        window.updateEnabledModels = function updateEnabledModelsLocalAware() {
-            const container = document.getElementById('modelConfigGroups');
-            if (!container || !container.querySelector('input[type="checkbox"]')) {
-                if (!enabledModels.length) enabledModels = [...AVAILABLE_MODELS];
-                return;
-            }
-            originalUpdateEnabledModels();
-        };
     }
 
     installOverrides();
