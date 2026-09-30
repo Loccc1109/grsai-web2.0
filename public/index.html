@@ -1680,6 +1680,11 @@
                         <input type="password" class="form-input" id="apiKeyChange2proGrok" placeholder="用于 grok-imagine-image-2.0">
                         <button class="btn btn-secondary" type="button" aria-label="显示或隐藏 Change2pro-Grok API Key" onclick="togglePassword('apiKeyChange2proGrok')" style="width: auto;">👁️</button>
                     </div>
+                    <label class="form-label" for="apiKeyChange2proSeedream" style="margin-top:12px;">Change2pro-Seedream API Key</label>
+                    <div class="input-group">
+                        <input type="password" class="form-input" id="apiKeyChange2proSeedream" placeholder="用于 seedream-v5-pro / seedream-v5-pro-nsfw">
+                        <button class="btn btn-secondary" type="button" aria-label="显示或隐藏 Change2pro-Seedream API Key" onclick="togglePassword('apiKeyChange2proSeedream')" style="width: auto;">👁️</button>
+                    </div>
                     <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
                         <button class="btn btn-secondary" type="button" onclick="refreshChange2proInfo()">查询模型/余额</button>
                         <span id="change2proUsageStatus" style="font-size:12px; color:#8b8f98;"></span>
@@ -1728,13 +1733,20 @@
         }
 
         const AVAILABLE_MODELS = [
-            "gpt-image-2-65535",
+            "gpt-image-2-auto-65535",
+            "gpt-image-2.5-flare-65535",
+            "gpt-image-2.5-sunburst-65535",
+            "gemini-3-pro-image-65535",
+            "gemini-3.1-flash-image-65535",
+            "grok-imagine-image-2.0-65535",
             "gpt-image-2-change2pro",
             "nano-banana-2-change2pro",
             "nano-banana-pro-change2pro",
             "gpt-image-2.5-flare-change2pro",
             "gpt-image-2.5-sunburst-change2pro",
             "grok-imagine-image-2.0-change2pro",
+            "seedream-v5-pro-change2pro",
+            "seedream-v5-pro-nsfw-change2pro",
             "gpt-image-2-grsai",
             "gpt-image-2.5-sunburst",
             "gpt-image-2.5-flare",
@@ -1758,20 +1770,28 @@
             "gpt-image-2-grsai": { provider: "grsai", name: "gpt-image-2" },
             "gpt-image-2.5-sunburst": { provider: "grsai", name: "gpt-image-2.5-sunburst" },
             "gpt-image-2.5-flare": { provider: "grsai", name: "gpt-image-2.5-flare" },
-            "gpt-image-2-65535": { provider: "65535", name: "gpt-image-2" },
+            "gpt-image-2-auto-65535": { provider: "65535", name: "gpt-image-2-auto" },
+            "gpt-image-2.5-flare-65535": { provider: "65535", name: "gpt-image-2.5-flare" },
+            "gpt-image-2.5-sunburst-65535": { provider: "65535", name: "gpt-image-2.5-sunburst" },
+            "gemini-3-pro-image-65535": { provider: "65535", name: "gemini-3-pro-image" },
+            "gemini-3.1-flash-image-65535": { provider: "65535", name: "gemini-3.1-flash-image" },
+            "grok-imagine-image-2.0-65535": { provider: "65535", name: "grok-imagine-image-2.0" },
             "gpt-image-2-change2pro": { provider: "Change2pro", name: "gpt-image-2" },
             "nano-banana-2-change2pro": { provider: "Change2pro", name: "nano-banana-2" },
             "nano-banana-pro-change2pro": { provider: "Change2pro", name: "nano-banana-pro" },
             "gpt-image-2.5-flare-change2pro": { provider: "Change2pro", name: "gpt-image-2.5-flare" },
             "gpt-image-2.5-sunburst-change2pro": { provider: "Change2pro", name: "gpt-image-2.5-sunburst" },
-            "grok-imagine-image-2.0-change2pro": { provider: "Change2pro", name: "grok-imagine-image-2.0" }
+            "grok-imagine-image-2.0-change2pro": { provider: "Change2pro", name: "grok-imagine-image-2.0" },
+            "seedream-v5-pro-change2pro": { provider: "Change2pro", name: "seedream-v5-pro" },
+            "seedream-v5-pro-nsfw-change2pro": { provider: "Change2pro", name: "seedream-v5-pro-nsfw" }
         };
 
         // Change2pro 三把 Key：GPT / Grok 走 OpenAI Images 接口（WxH 尺寸），Gemini 走原生 generateContent（比例 + 1K/2K/4K）
         const CHANGE2PRO_KEY_KINDS = {
             gpt: { label: 'Change2pro-GPT', configKey: 'apiKeyChange2proGpt' },
             gemini: { label: 'Change2pro-Gemini', configKey: 'apiKeyChange2proGemini' },
-            grok: { label: 'Change2pro-Grok', configKey: 'apiKeyChange2proGrok' }
+            grok: { label: 'Change2pro-Grok', configKey: 'apiKeyChange2proGrok' },
+            seedream: { label: 'Change2pro-Seedream', configKey: 'apiKeyChange2proSeedream' }
         };
         const CHANGE2PRO_GEMINI_MODELS = ["nano-banana-2-change2pro", "nano-banana-pro-change2pro"];
 
@@ -1788,6 +1808,7 @@
             if (!isChange2proModel(model)) return '';
             if (isChange2proGeminiModel(model)) return 'gemini';
             if (getModelName(model).startsWith('grok-')) return 'grok';
+            if (getModelName(model).startsWith('seedream-')) return 'seedream';
             return 'gpt';
         }
 
@@ -1859,9 +1880,18 @@
             return OPENAI_SIZE_MAP[ratio]?.[resolution] || '1024x1024';
         }
 
+        // 65535 使用 比例(size) + 清晰度(resolution)，比例额外支持 auto
+        function isModel65535(model) {
+            return getModelProvider(model) === '65535';
+        }
+
+        // grok-imagine-image-2.0 不支持 4K
+        function model65535Supports4K(model) {
+            return model !== 'grok-imagine-image-2.0-65535';
+        }
+
         function isGptImageModel(model) {
-            return model === 'gpt-image-2-65535'
-                || (isChange2proModel(model) && !isChange2proGeminiModel(model))
+            return (isChange2proModel(model) && !isChange2proGeminiModel(model))
                 || model === 'gpt-image-2-grsai'
                 || GPT_IMAGE_25_MODELS.includes(model);
         }
@@ -1988,7 +2018,7 @@
                     const openaiSizePanel = document.getElementById(`openaiSizePanel-${windowId}`);
                     const banana2OnlyBtns = document.querySelectorAll(`.banana2-only-${windowId}`);
 
-                    if (isGptImageModel(model)) {
+                    if (isModel65535(model) || isGptImageModel(model)) {
                         if (bananaSizePanel) bananaSizePanel.style.display = 'none';
                         if (bananaRatioPanel) bananaRatioPanel.style.display = 'none';
                         if (openaiSizePanel) openaiSizePanel.style.display = 'block';
@@ -2133,6 +2163,7 @@
 
                         <label class="form-label">宽高比</label>
                         <div class="ratio-selector" id="openaiRatioSelector-${windowId}">
+                            <div class="ratio-btn ratio-65535-only-${windowId}" data-ratio="auto" onclick="selectRatio(${windowId}, this, 'auto')" style="display: none;">auto</div>
                             <div class="ratio-btn active" data-ratio="1:1" onclick="selectRatio(${windowId}, this, '1:1')">1:1</div>
                             <div class="ratio-btn" data-ratio="16:9" onclick="selectRatio(${windowId}, this, '16:9')">16:9</div>
                             <div class="ratio-btn" data-ratio="9:16" onclick="selectRatio(${windowId}, this, '9:16')">9:16</div>
@@ -2641,14 +2672,27 @@
             const window = windows[windowId];
             if (!window) return;
 
-            if (!['1K', '2K', '4K'].includes(window.selectedSize)) {
-                window.selectedSize = '1K';
+            const model = getSelectedModel(windowId);
+            const uses65535 = isModel65535(model);
+            const allowedSizes = uses65535 && !model65535Supports4K(model) ? ['1K', '2K'] : ['1K', '2K', '4K'];
+            if (!allowedSizes.includes(window.selectedSize)) {
+                window.selectedSize = window.selectedSize === '4K' ? '2K' : '1K';
             }
-            if (!OPENAI_SIZE_MAP[window.selectedRatio]?.[window.selectedSize]) {
-                window.selectedRatio = '1:1';
+            const ratioIsValid = (uses65535 && window.selectedRatio === 'auto')
+                || OPENAI_SIZE_MAP[window.selectedRatio]?.[window.selectedSize];
+            if (!ratioIsValid) {
+                window.selectedRatio = uses65535 ? 'auto' : '1:1';
             }
 
             const openaiSizePanel = document.getElementById(`openaiSizePanel-${windowId}`);
+            openaiSizePanel?.querySelectorAll('.size-btn').forEach(btn => {
+                const allowed = allowedSizes.includes(btn.dataset.size);
+                btn.style.display = allowed ? '' : 'none';
+                btn.setAttribute('aria-disabled', String(!allowed));
+            });
+            document.querySelectorAll(`.ratio-65535-only-${windowId}`).forEach(btn => {
+                btn.style.display = uses65535 ? 'block' : 'none';
+            });
             const openaiRatioSelector = document.getElementById(`openaiRatioSelector-${windowId}`);
             setActiveButton(openaiSizePanel, `.size-btn[data-size="${window.selectedSize}"]`);
             setActiveButton(openaiRatioSelector, `.ratio-btn[data-ratio="${window.selectedRatio}"]`);
@@ -2682,6 +2726,7 @@
             if (!window) return;
 
             const selectedModel = getSelectedModel(windowId);
+            if (isModel65535(selectedModel) && !model65535Supports4K(selectedModel) && size === '4K') return;
             const fixedSize = getFixedBananaModelSize(selectedModel);
             if (fixedSize && size !== fixedSize) {
                 const fixedSizeBtn = document.querySelector(`#bananaSizePanel-${windowId} .size-btn[data-size="${fixedSize}"]`);
@@ -2751,7 +2796,7 @@
             if (!window) return;
             
             const selectedModel = document.getElementById(`model-${windowId}`).value;
-            const is65535Model = selectedModel === 'gpt-image-2-65535';
+            const is65535Model = getModelProvider(selectedModel) === '65535';
             const usesChange2pro = isChange2proModel(selectedModel);
             const usesMappedImageSize = isGptImageModel(selectedModel);
             const selectedImageSize = getFixedBananaModelSize(selectedModel) || window.selectedSize;

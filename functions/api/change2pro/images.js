@@ -6,13 +6,15 @@
 // - 限制请求体、提示词、图片数量与大小、尺寸格式
 // Change2pro 文档中的统一网关；不要再使用旧的 api.change2pro.com 地址。
 const CHANGE2PRO_BASE_URL = 'https://gateway.change2pro.com';
-// 前端内部模型 ID -> Change2pro 上游模型 ID（白名单，仅 OpenAI Images 接口的 GPT / Grok 模型；
+// 前端内部模型 ID -> Change2pro 上游模型 ID（白名单，仅 OpenAI Images 接口的 GPT / Grok / Seedream 模型；
 // nano-banana 系列走 Gemini 原生接口，见 gemini.js）
 const CLIENT_MODEL_MAP = {
   'gpt-image-2-change2pro': 'gpt-image-2',
   'gpt-image-2.5-flare-change2pro': 'gpt-image-2.5-flare',
   'gpt-image-2.5-sunburst-change2pro': 'gpt-image-2.5-sunburst',
   'grok-imagine-image-2.0-change2pro': 'grok-imagine-image-2.0',
+  'seedream-v5-pro-change2pro': 'seedream-v5-pro',
+  'seedream-v5-pro-nsfw-change2pro': 'seedream-v5-pro-nsfw',
 };
 
 const MAX_BODY_BYTES = 40 * 1024 * 1024;

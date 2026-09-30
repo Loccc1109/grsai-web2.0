@@ -5,7 +5,7 @@
     const GRSAI_HOSTS = ['https://grsai.dakka.com.cn', 'https://grsaiapi.com'];
     const GRSAI_POLL_INTERVAL_MS = 5000;
     const GRSAI_POLL_TIMEOUT_MS = 600000;
-    const API_65535_BASE_URL = 'https://sub-proxy-us.65535.space/v1';
+    const API_65535_BASE_URL = 'https://task-api-1-cn.65535.space';
     const CHANGE2PRO_BASE_URL = 'https://gateway.change2pro.com';
     const objectUrls = new Set();
     const assetUrlCache = new Map();
@@ -138,6 +138,180 @@
         };
     })();
 
+    // ===== XMP 标签写入（移植自 image_label_adder_desktop.py）=====
+    // JPG/JPEG：原字节写入 XMP；其他格式：先转 JPG（质量 100，透明区域铺白底）再写入。
+    const XMP_LABEL_KEYWORD = 'contains-synthetic-performer';
+    const JPEG_XMP_HEADER = new TextEncoder().encode('http://ns.adobe.com/xap/1.0/\x00');
+    const XMP_NS = 'adobe:ns:meta/';
+    const RDF_NS = 'http://www.w3.org/1999/02/22-rdf-syntax-ns#';
+    const DC_NS = 'http://purl.org/dc/elements/1.1/';
+
+    const XmpLabeler = {
+        isJpegBytes(bytes) {
+            return bytes.length >= 2 && bytes[0] === 0xFF && bytes[1] === 0xD8;
+        },
+
+        parsePacket(packet) {
+            try {
+                const xml = String(packet).replace(/<\?xpacket[^>]*\?>/g, '').trim();
+                const doc = new DOMParser().parseFromString(xml, 'application/xml');
+                if (doc.getElementsByTagName('parsererror').length) return null;
+                return doc;
+            } catch (error) {
+                return null;
+            }
+        },
+
+        directChildren(parent, ns, localName) {
+            return Array.from(parent.childNodes).filter(node => node.nodeType === 1 && node.namespaceURI === ns && node.localName === localName);
+        },
+
+        collectKeywords(packet) {
+            const doc = this.parsePacket(packet);
+            if (!doc) return [];
+            const keywords = [];
+            for (const subject of Array.from(doc.getElementsByTagNameNS(DC_NS, 'subject'))) {
+                for (const bag of this.directChildren(subject, RDF_NS, 'Bag')) {
+                    for (const li of this.directChildren(bag, RDF_NS, 'li')) {
+                        const text = (li.textContent || '').trim();
+                        if (text && !keywords.includes(text)) keywords.push(text);
+                    }
+                }
+            }
+            return keywords;
+        },
+
+        minimalDoc(keyword) {
+            const doc = document.implementation.createDocument(XMP_NS, 'x:xmpmeta', null);
+            const rdf = doc.createElementNS(RDF_NS, 'rdf:RDF');
+            const desc = doc.createElementNS(RDF_NS, 'rdf:Description');
+            desc.setAttributeNS(RDF_NS, 'rdf:about', '');
+            const subject = doc.createElementNS(DC_NS, 'dc:subject');
+            const bag = doc.createElementNS(RDF_NS, 'rdf:Bag');
+            const li = doc.createElementNS(RDF_NS, 'rdf:li');
+            li.textContent = keyword;
+            bag.appendChild(li);
+            subject.appendChild(bag);
+            desc.appendChild(subject);
+            rdf.appendChild(desc);
+            doc.documentElement.appendChild(rdf);
+            return doc;
+        },
+
+        toPacket(doc) {
+            const xml = new XMLSerializer().serializeToString(doc.documentElement);
+            return `<?xpacket begin="\ufeff" id="W5M0MpCehiHzreSzNTczkc9d"?>\n${xml}\n<?xpacket end="w"?>`;
+        },
+
+        mergePackets(packets, keyword) {
+            let doc = null;
+            for (const packet of packets) {
+                doc = this.parsePacket(packet);
+                if (doc) break;
+            }
+            if (!doc) doc = this.minimalDoc(keyword);
+
+            const keywords = [];
+            for (const packet of packets) {
+                for (const value of this.collectKeywords(packet)) {
+                    if (!keywords.includes(value)) keywords.push(value);
+                }
+            }
+            if (!keywords.includes(keyword)) keywords.push(keyword);
+
+            const rdf = doc.getElementsByTagNameNS(RDF_NS, 'RDF')[0];
+            if (!rdf) return this.toPacket(this.minimalDoc(keyword));
+
+            let desc = this.directChildren(rdf, RDF_NS, 'Description')[0];
+            if (!desc) {
+                desc = doc.createElementNS(RDF_NS, 'rdf:Description');
+                desc.setAttributeNS(RDF_NS, 'rdf:about', '');
+                rdf.appendChild(desc);
+            }
+
+            const subjects = this.directChildren(desc, DC_NS, 'subject');
+            const subject = subjects[0] || desc.appendChild(doc.createElementNS(DC_NS, 'dc:subject'));
+            subjects.slice(1).forEach(extra => desc.removeChild(extra));
+            while (subject.firstChild) subject.removeChild(subject.firstChild);
+
+            const bag = doc.createElementNS(RDF_NS, 'rdf:Bag');
+            for (const value of keywords) {
+                const li = doc.createElementNS(RDF_NS, 'rdf:li');
+                li.textContent = value;
+                bag.appendChild(li);
+            }
+            subject.appendChild(bag);
+            return this.toPacket(doc);
+        },
+
+        createApp1(packet) {
+            const packetBytes = new TextEncoder().encode(packet);
+            const length = JPEG_XMP_HEADER.length + packetBytes.length + 2;
+            if (length > 65535) throw new Error('XMP 元数据过大，无法写入 JPG。');
+            const segment = new Uint8Array(length + 2);
+            segment[0] = 0xFF;
+            segment[1] = 0xE1;
+            segment[2] = (length >> 8) & 0xFF;
+            segment[3] = length & 0xFF;
+            segment.set(JPEG_XMP_HEADER, 4);
+            segment.set(packetBytes, 4 + JPEG_XMP_HEADER.length);
+            return segment;
+        },
+
+        isXmpSegment(data, off, marker) {
+            if (marker !== 0xE1) return false;
+            for (let i = 0; i < JPEG_XMP_HEADER.length; i++) {
+                if (data[off + 4 + i] !== JPEG_XMP_HEADER[i]) return false;
+            }
+            return true;
+        },
+
+        // 返回写入 XMP 后的 JPG 字节片段数组（可直接用于 new Blob）
+        injectIntoJpeg(data, keyword = XMP_LABEL_KEYWORD) {
+            if (!this.isJpegBytes(data)) throw new Error('文件不是有效的 JPG 图片。');
+            const parts = [data.subarray(0, 2)];
+            const packets = [];
+            const decoder = new TextDecoder('utf-8');
+            let off = 2;
+            while (off < data.length) {
+                if (data[off] !== 0xFF) { parts.push(data.subarray(off)); break; }
+                const marker = data[off + 1];
+                if (marker === 0xD9 || marker === 0xDA) { parts.push(data.subarray(off)); break; }
+                if (marker === 0x01 || (marker >= 0xD0 && marker <= 0xD7)) {
+                    parts.push(data.subarray(off, off + 2));
+                    off += 2;
+                    continue;
+                }
+                if (off + 4 > data.length) { parts.push(data.subarray(off)); break; }
+                const segLen = (data[off + 2] << 8) | data[off + 3];
+                const end = off + 2 + segLen;
+                if (segLen < 2 || end > data.length) { parts.push(data.subarray(off)); break; }
+                if (this.isXmpSegment(data, off, marker)) {
+                    let payloadEnd = end;
+                    const payloadStart = off + 4 + JPEG_XMP_HEADER.length;
+                    while (payloadEnd > payloadStart && data[payloadEnd - 1] === 0x00) payloadEnd--;
+                    packets.push(decoder.decode(data.subarray(payloadStart, payloadEnd)));
+                } else {
+                    parts.push(data.subarray(off, end));
+                }
+                off = end;
+            }
+
+            const segment = this.createApp1(this.mergePackets(packets, keyword));
+            let insertAt = 1;
+            while (insertAt < parts.length) {
+                const seg = parts[insertAt];
+                if (seg.length >= 2 && seg[0] === 0xFF && seg[1] >= 0xE0 && seg[1] <= 0xEF) {
+                    insertAt++;
+                    continue;
+                }
+                break;
+            }
+            parts.splice(insertAt, 0, segment);
+            return parts;
+        }
+    };
+
     const ImageAssetService = {
         async sha256(blob) {
             const buffer = await blob.arrayBuffer();
@@ -212,9 +386,24 @@
             }
         },
 
+        // 生成图统一出口：JPG 原地写 XMP；PNG/WebP/BMP/TIFF 等转 JPG 后写 XMP（原格式不保留）
+        async toLabeledJpegBlob(blob, keyword = XMP_LABEL_KEYWORD) {
+            if (!blob || !blob.size) throw new Error('图片内容为空');
+            let bytes = new Uint8Array(await blob.arrayBuffer());
+            if (!XmpLabeler.isJpegBytes(bytes)) {
+                const jpegBlob = await this.renderJpegBlob(blob, 1);
+                bytes = new Uint8Array(await jpegBlob.arrayBuffer());
+            }
+            return new Blob(XmpLabeler.injectIntoJpeg(bytes, keyword), { type: 'image/jpeg' });
+        },
+
         async convertToJpegBlob(blob, quality = 0.95) {
             if (!blob || !blob.size) throw new Error('图片内容为空');
             if ((blob.type || '').toLowerCase() === 'image/jpeg') return blob;
+            return this.renderJpegBlob(blob, quality);
+        },
+
+        async renderJpegBlob(blob, quality) {
             const image = await this.readImage(blob);
             const width = image.naturalWidth || image.width;
             const height = image.naturalHeight || image.height;
@@ -285,7 +474,15 @@
             if (assetUrlCache.has(key)) return assetUrlCache.get(key);
             const asset = await LocalGalleryDB.getAsset(hash);
             if (!asset) return '';
-            const blob = preferThumb && asset.thumbBlob ? asset.thumbBlob : asset.blob;
+            let blob = preferThumb && asset.thumbBlob ? asset.thumbBlob : asset.blob;
+            // 生成图（含旧数据、缩略图）展示时也用带标签的 JPG，保证右键“另存为”同样带 XMP 标签
+            if ((asset.usageTypes || []).includes('generation')) {
+                try {
+                    blob = await this.toLabeledJpegBlob(blob);
+                } catch (error) {
+                    console.warn('写入 XMP 标签失败:', error);
+                }
+            }
             const url = this.createObjectUrl(blob);
             assetUrlCache.set(key, url);
             return url;
@@ -338,8 +535,8 @@
         async downloadAsset(hash) {
             const asset = await LocalGalleryDB.getAsset(hash);
             if (!asset) throw new Error('图片不存在');
-            const shouldDownloadJpeg = (asset.usageTypes || []).includes('generation') && (asset.mimeType || asset.blob?.type || '').toLowerCase() !== 'image/jpeg';
-            const downloadBlob = shouldDownloadJpeg ? await this.convertToJpegBlob(asset.blob) : asset.blob;
+            const shouldDownloadJpeg = (asset.usageTypes || []).includes('generation');
+            const downloadBlob = shouldDownloadJpeg ? await this.toLabeledJpegBlob(asset.blob) : asset.blob;
             const url = this.createObjectUrl(downloadBlob);
             const a = document.createElement('a');
             a.href = url;
@@ -356,17 +553,7 @@
     const BrowserGenerationClient = {
         async generateImage({ provider, apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask }) {
             if (provider === '65535') {
-                return this.generateOpenAIImages({
-                    apiKey,
-                    prompt,
-                    model: 'gpt-image-2-auto',
-                    imageSize,
-                    referenceHashes,
-                    baseUrl: API_65535_BASE_URL,
-                    imageFieldName: 'image[]',
-                    includeOpenAIOptions: true,
-                    providerLabel: '65535'
-                });
+                return this.generate65535({ apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask });
             }
             if (provider === 'change2pro') {
                 if (isChange2proGeminiModel(model)) {
@@ -376,6 +563,61 @@
             }
             const apiModel = model === 'gpt-image-2-grsai' ? 'gpt-image-2-vip' : model;
             return this.generateGrsai({ apiKey, prompt, model: apiModel, imageSize, aspectRatio, referenceHashes, onProviderTask });
+        },
+
+        async generate65535({ apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask }) {
+            const meta = MODEL_CATALOG[model];
+            if (meta?.provider !== '65535') throw new Error('不支持的 65535 模型');
+            const assets = await this.getReferenceAssets(referenceHashes);
+            if (assets.length > 16) throw new Error('65535 最多支持 16 张参考图');
+            if (assets.reduce((sum, asset) => sum + asset.blob.size, 0) > 256 * 1024 * 1024) {
+                throw new Error('65535 参考图总大小不能超过 256 MiB');
+            }
+            // size 传宽高比（含 auto），resolution 传清晰度档位；grok 不支持 4K
+            let resolution = ['1K', '2K', '4K'].includes(imageSize) ? imageSize : '1K';
+            if (resolution === '4K' && model === 'grok-imagine-image-2.0-65535') resolution = '2K';
+            const input = {
+                prompt,
+                size: aspectRatio || 'auto',
+                resolution: resolution.toLowerCase(),
+                n: 1,
+                response_format: 'url'
+            };
+            if (assets.length) {
+                input.image_urls = [];
+                for (const asset of assets) input.image_urls.push(await ImageAssetService.blobToDataUrl(asset.blob));
+            }
+            const headers = { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' };
+            const task = await this.fetchJson(`${API_65535_BASE_URL}/v1/tasks`, {
+                method: 'POST',
+                headers: { ...headers, 'Idempotency-Key': crypto.randomUUID() },
+                body: JSON.stringify({ kind: 'image', model: meta.name, input }),
+                signal: AbortSignal.timeout(120000)
+            });
+            if (!task?.id) throw new Error('65535 未返回任务 ID');
+            if (typeof onProviderTask === 'function') {
+                await onProviderTask({ providerTaskId: task.id, providerHost: API_65535_BASE_URL });
+            }
+            const deadline = Date.now() + 15 * 60 * 1000;
+            let result = task;
+            while (true) {
+                if (result.status === 'failed') {
+                    throw new Error(result.error_message || result.error_code || '65535 任务失败');
+                }
+                if (result.status === 'done') {
+                    const images = Array.isArray(result.result_urls) && result.result_urls.length
+                        ? result.result_urls.map(url => ({ url }))
+                        : this.extractImageResults(result.result);
+                    return Promise.all(images.map(item => ImageAssetService.resultToBlob(item, 'image/png')));
+                }
+                if (Date.now() >= deadline) throw new Error(`65535 查询超时，任务 ID：${task.id}（任务可能仍在运行，请勿重复提交）`);
+                await this.sleep(2000);
+                result = await this.fetchJson(`${API_65535_BASE_URL}/v1/tasks/${encodeURIComponent(task.id)}`, {
+                    headers: { Authorization: headers.Authorization },
+                    cache: 'no-store',
+                    signal: AbortSignal.timeout(30000)
+                });
+            }
         },
 
         async getReferenceAssets(referenceHashes) {
@@ -1111,6 +1353,12 @@
         if (!win || !generation) return;
         setWindowModel(windowId, generation.model);
         const model = generation.model || getSelectedModel(windowId);
+        if (isModel65535(model)) {
+            if (generation.imageSize) selectButtonByData(`#openaiSizePanel-${windowId}`, 'data-size', generation.imageSize);
+            if (generation.aspectRatio) selectButtonByData(`#openaiRatioSelector-${windowId}`, 'data-ratio', generation.aspectRatio);
+            syncGptImageSizingUI(windowId);
+            return;
+        }
         if (isGptImageModel(model)) {
             const size = Object.entries(OPENAI_SIZE_MAP).find(([, sizes]) => Object.values(sizes).includes(generation.imageSize));
             const ratio = generation.aspectRatio && OPENAI_SIZE_MAP[generation.aspectRatio] ? generation.aspectRatio : (size ? size[0] : win.selectedRatio);
@@ -1354,7 +1602,7 @@
                 globalConfig = saved || {};
                 document.getElementById('apiKey').value = globalConfig.apiKey || '';
                 const apiKey65535Input = document.getElementById('apiKey65535');
-                if (apiKey65535Input) apiKey65535Input.value = globalConfig.apiKey65535 || globalConfig.apiKey_65535 || '';
+                if (apiKey65535Input) apiKey65535Input.value = globalConfig.apiKey65535 || globalConfig.api_key_65535 || '';
                 fillChange2proKeyInputs(globalConfig);
             } catch (error) {
                 console.error('加载本地设置失败:', error);
@@ -1436,7 +1684,7 @@
         const win = windows[windowId];
         if (!win) return;
         const selectedModel = document.getElementById(`model-${windowId}`).value;
-        const is65535Model = selectedModel === 'gpt-image-2-65535';
+        const is65535Model = getModelProvider(selectedModel) === '65535';
         const usesChange2pro = isChange2proModel(selectedModel);
         const usesMappedImageSize = isGptImageModel(selectedModel);
         const selectedImageSize = getFixedBananaModelSize(selectedModel) || win.selectedSize;
@@ -1523,9 +1771,8 @@
                         aspectRatio: requestAspectRatio,
                         referenceHashes
                     });
-                    const blob = await ImageAssetService.convertToJpegBlob(blobs[0]);
-                    const ext = ImageAssetService.extensionFromMime(blob.type || 'image/jpeg');
-                    const asset = await ImageAssetService.saveAssetFromBlob(blob, 'generation', `${selectedModel}_${new Date().toISOString().replace(/[:.]/g, '-')}_${index + 1}.${ext}`);
+                    const blob = await ImageAssetService.toLabeledJpegBlob(blobs[0]);
+                    const asset = await ImageAssetService.saveAssetFromBlob(blob, 'generation', `${selectedModel}_${new Date().toISOString().replace(/[:.]/g, '-')}_${index + 1}.jpg`);
                     generation.resultHashes.push(asset.hash);
                     taskData.completed += 1;
                     taskData.results[index] = { success: true, assetHash: asset.hash, prompt };
