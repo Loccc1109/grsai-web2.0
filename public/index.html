@@ -1967,6 +1967,7 @@
             "grok-imagine-image-2.0-65535",
             "gpt-image-2-change2pro",
             "nano-banana-2-change2pro",
+            "nano-banana-2.1-change2pro",
             "nano-banana-pro-change2pro",
             "gpt-image-2.5-flare-change2pro",
             "gpt-image-2.5-sunburst-change2pro",
@@ -1977,6 +1978,7 @@
             "gpt-image-2.5-sunburst",
             "gpt-image-2.5-flare",
             "nano-banana-2",
+            "nano-banana-2.1",
             "nano-banana-2-cl",
             "nano-banana-2-2k-cl",
             "nano-banana-2-4k-cl",
@@ -1989,6 +1991,7 @@
         // 模型目录：内部模型 ID -> 服务商 + 展示名称（ID 保持不变，保证接口与历史数据兼容）
         const MODEL_CATALOG = {
             "nano-banana-2": { provider: "grsai", name: "nano-banana-2" },
+            "nano-banana-2.1": { provider: "grsai", name: "nano-banana-2.1" },
             "nano-banana-2-cl": { provider: "grsai", name: "nano-banana-2-cl" },
             "nano-banana-2-2k-cl": { provider: "grsai", name: "nano-banana-2-2k-cl" },
             "nano-banana-2-4k-cl": { provider: "grsai", name: "nano-banana-2-4k-cl" },
@@ -2004,6 +2007,7 @@
             "grok-imagine-image-2.0-65535": { provider: "65535", name: "grok-imagine-image-2.0" },
             "gpt-image-2-change2pro": { provider: "Change2pro", name: "gpt-image-2" },
             "nano-banana-2-change2pro": { provider: "Change2pro", name: "nano-banana-2" },
+            "nano-banana-2.1-change2pro": { provider: "Change2pro", name: "nano-banana-2.1" },
             "nano-banana-pro-change2pro": { provider: "Change2pro", name: "nano-banana-pro" },
             "gpt-image-2.5-flare-change2pro": { provider: "Change2pro", name: "gpt-image-2.5-flare" },
             "gpt-image-2.5-sunburst-change2pro": { provider: "Change2pro", name: "gpt-image-2.5-sunburst" },
@@ -2019,7 +2023,7 @@
             grok: { label: 'Change2pro-Grok', configKey: 'apiKeyChange2proGrok' },
             seedream: { label: 'Change2pro-Seedream', configKey: 'apiKeyChange2proSeedream' }
         };
-        const CHANGE2PRO_GEMINI_MODELS = ["nano-banana-2-change2pro", "nano-banana-pro-change2pro"];
+        const CHANGE2PRO_GEMINI_MODELS = ["nano-banana-2-change2pro", "nano-banana-2.1-change2pro", "nano-banana-pro-change2pro"];
 
         function isChange2proModel(model) {
             return getModelProvider(model) === 'Change2pro';

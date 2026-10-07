@@ -9,6 +9,7 @@ import { CHANGE2PRO_BASE_URL, extractErrorMessage, isSameOrigin, jsonResponse, p
 // 前端内部模型 ID -> Change2pro 上游模型 ID
 const CLIENT_MODEL_MAP = {
   'nano-banana-2-change2pro': 'nano-banana-2',
+  'nano-banana-2.1-change2pro': 'nano-banana-2.1',
   'nano-banana-pro-change2pro': 'nano-banana-pro',
 };
 
