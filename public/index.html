@@ -1975,6 +1975,9 @@
             "seedream-v5-pro-change2pro",
             "seedream-v5-pro-nsfw-change2pro",
             "gpt-image-2-grsai",
+            "gpt-image-2.6",
+            "gpt-image-2.6-flare",
+            "gpt-image-2.6-sunburst",
             "gpt-image-2.5-sunburst",
             "gpt-image-2.5-flare",
             "nano-banana-2",
@@ -1997,6 +2000,9 @@
             "nano-banana-2-4k-cl": { provider: "grsai", name: "nano-banana-2-4k-cl" },
             "nano-banana-pro": { provider: "grsai", name: "nano-banana-pro" },
             "gpt-image-2-grsai": { provider: "grsai", name: "gpt-image-2" },
+            "gpt-image-2.6": { provider: "grsai", name: "gpt-image-2.6" },
+            "gpt-image-2.6-flare": { provider: "grsai", name: "gpt-image-2.6-flare" },
+            "gpt-image-2.6-sunburst": { provider: "grsai", name: "gpt-image-2.6-sunburst" },
             "gpt-image-2.5-sunburst": { provider: "grsai", name: "gpt-image-2.5-sunburst" },
             "gpt-image-2.5-flare": { provider: "grsai", name: "gpt-image-2.5-flare" },
             "gpt-image-2-auto-65535": { provider: "65535", name: "gpt-image-2-auto" },
@@ -2069,6 +2075,9 @@
         const MODEL_PROVIDERS = ["grsai", "65535", "Change2pro"];
 
         const GPT_IMAGE_25_MODELS = ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare"];
+        const GPT_IMAGE_26_MODELS = [
+            "gpt-image-2.6", "gpt-image-2.6-flare", "gpt-image-2.6-sunburst"
+        ];
 
         function getModelProvider(model) {
             return MODEL_CATALOG[model]?.provider || '';
@@ -2123,7 +2132,32 @@
         function isGptImageModel(model) {
             return (isChange2proModel(model) && !isChange2proGeminiModel(model))
                 || model === 'gpt-image-2-grsai'
-                || GPT_IMAGE_25_MODELS.includes(model);
+                || GPT_IMAGE_25_MODELS.includes(model)
+                || GPT_IMAGE_26_MODELS.includes(model);
+        }
+
+        function getModelImageSizes(model) {
+            if (model === 'gpt-image-2.6') return ['1K'];
+            if (isModel65535(model) && !model65535Supports4K(model)) return ['1K', '2K'];
+            return ['1K', '2K', '4K'];
+        }
+
+        // 输出格式仅用于 GRSAI；其他服务商沿用 2.5 的请求格式。
+        function getModelOutputFormats(model) {
+            if (model === 'gpt-image-2.6') return ['png', 'gif', 'svg'];
+            if (GPT_IMAGE_26_MODELS.includes(model)) return ['png', 'gif'];
+            return ['png'];
+        }
+
+        function syncImageOutputFormatUI(windowId, model = getSelectedModel(windowId)) {
+            const panel = document.getElementById(`imageOutputFormatPanel-${windowId}`);
+            const select = document.getElementById(`imageOutputFormat-${windowId}`);
+            if (!panel || !select) return;
+            const formats = getModelOutputFormats(model);
+            const previous = select.value;
+            select.innerHTML = formats.map(format => `<option value="${format}">${format.toUpperCase()}</option>`).join('');
+            select.value = formats.includes(previous) ? previous : 'png';
+            panel.style.display = formats.length > 1 ? 'block' : 'none';
         }
 
         const FIXED_BANANA_MODEL_SIZES = {
@@ -2255,6 +2289,7 @@
             if (modelSelect) {
                 modelSelect.addEventListener('change', (event) => {
                     const model = event.target.value;
+                    syncImageOutputFormatUI(windowId, model);
                     const bananaSizePanel = document.getElementById(`bananaSizePanel-${windowId}`);
                     const bananaRatioPanel = document.getElementById(`bananaRatioPanel-${windowId}`);
                     const openaiSizePanel = document.getElementById(`openaiSizePanel-${windowId}`);
@@ -2422,6 +2457,14 @@
                             <div class="ratio-btn" data-ratio="2:1" onclick="selectRatio(${windowId}, this, '2:1')">2:1</div>
                             <div class="ratio-btn" data-ratio="1:2" onclick="selectRatio(${windowId}, this, '1:2')">1:2</div>
                         </div>
+                    </div>
+
+                    <div id="imageOutputFormatPanel-${windowId}" style="display: none;">
+                        <label class="form-label" for="imageOutputFormat-${windowId}">输出格式</label>
+                        <select class="form-select" id="imageOutputFormat-${windowId}">
+                            <option value="png">PNG</option>
+                        </select>
+                        <div style="font-size:12px; color:#8b8f98; margin-top:6px;">GIF / SVG 保留原格式，不转 JPG、不打标；PNG 沿用转 JPG 和打标流程。</div>
                     </div>
 
                     <label class="form-label">数量</label>
@@ -2924,9 +2967,9 @@
 
             const model = getSelectedModel(windowId);
             const uses65535 = isModel65535(model);
-            const allowedSizes = uses65535 && !model65535Supports4K(model) ? ['1K', '2K'] : ['1K', '2K', '4K'];
+            const allowedSizes = getModelImageSizes(model);
             if (!allowedSizes.includes(window.selectedSize)) {
-                window.selectedSize = window.selectedSize === '4K' ? '2K' : '1K';
+                window.selectedSize = allowedSizes.includes('2K') && window.selectedSize === '4K' ? '2K' : '1K';
             }
             const ratioIsValid = (uses65535 && window.selectedRatio === 'auto')
                 || OPENAI_SIZE_MAP[window.selectedRatio]?.[window.selectedSize];
@@ -2976,7 +3019,7 @@
             if (!window) return;
 
             const selectedModel = getSelectedModel(windowId);
-            if (isModel65535(selectedModel) && !model65535Supports4K(selectedModel) && size === '4K') return;
+            if ((isModel65535(selectedModel) || isGptImageModel(selectedModel)) && !getModelImageSizes(selectedModel).includes(size)) return;
             const fixedSize = getFixedBananaModelSize(selectedModel);
             if (fixedSize && size !== fixedSize) {
                 const fixedSizeBtn = document.querySelector(`#bananaSizePanel-${windowId} .size-btn[data-size="${fixedSize}"]`);
@@ -3298,7 +3341,7 @@
     <script>
         window.GRSAI_STATIC_DEPLOY = true;
     </script>
-    <script src="/static/local_gallery.js"></script>
+    <script src="/static/local_gallery.js?v=gpt-image-26-1"></script>
     <script src="/static/smooth_window_motion.js"></script>
     <script src="/static/generation_gallery_sidebar.js"></script>
     <script src="/static/static_pages_bootstrap.js"></script>

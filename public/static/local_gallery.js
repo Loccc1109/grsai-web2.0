@@ -386,9 +386,34 @@
             }
         },
 
-        // 生成图统一出口：JPG 原地写 XMP；PNG/WebP/BMP/TIFF 等转 JPG 后写 XMP（原格式不保留）
-        async toLabeledJpegBlob(blob, keyword = XMP_LABEL_KEYWORD) {
+        // 上游可能返回 application/octet-stream，甚至错误标成 JPEG；用内容识别 GIF/SVG。
+        async normalizeImageBlob(blob) {
             if (!blob || !blob.size) throw new Error('图片内容为空');
+            const header = new Uint8Array(await blob.slice(0, 65536).arrayBuffer());
+            const signature = String.fromCharCode(...header.subarray(0, 6));
+            let mimeType = (blob.type || '').split(';')[0].trim().toLowerCase();
+            if (signature === 'GIF87a' || signature === 'GIF89a') {
+                mimeType = 'image/gif';
+            } else if (header[0] === 0xFF && header[1] === 0xD8) {
+                mimeType = 'image/jpeg';
+            } else if (header[0] === 0x89 && signature.slice(1, 4) === 'PNG') {
+                mimeType = 'image/png';
+            } else {
+                const text = new TextDecoder().decode(header).replace(/^\uFEFF/, '').trimStart();
+                const root = text.replace(/<\?[\s\S]*?\?>|<!--[\s\S]*?-->|<!DOCTYPE[\s\S]*?>/gi, '').trimStart();
+                if (/^<svg(?:\s|>)/i.test(root)) mimeType = 'image/svg+xml';
+            }
+            return mimeType && mimeType !== blob.type ? new Blob([blob], { type: mimeType }) : blob;
+        },
+
+        isPreservedFormat(blob) {
+            return ['image/gif', 'image/svg+xml'].includes((blob?.type || '').split(';')[0].trim().toLowerCase());
+        },
+
+        // 生成图统一出口：普通格式转 JPG 并写 XMP；GIF/SVG 保留原格式且不写标签
+        async toLabeledJpegBlob(blob, keyword = XMP_LABEL_KEYWORD) {
+            blob = await this.normalizeImageBlob(blob);
+            if (this.isPreservedFormat(blob)) return blob;
             let bytes = new Uint8Array(await blob.arrayBuffer());
             if (!XmpLabeler.isJpegBytes(bytes)) {
                 const jpegBlob = await this.renderJpegBlob(blob, 1);
@@ -398,8 +423,8 @@
         },
 
         async convertToJpegBlob(blob, quality = 0.95) {
-            if (!blob || !blob.size) throw new Error('图片内容为空');
-            if ((blob.type || '').toLowerCase() === 'image/jpeg') return blob;
+            blob = await this.normalizeImageBlob(blob);
+            if (this.isPreservedFormat(blob) || blob.type === 'image/jpeg') return blob;
             return this.renderJpegBlob(blob, quality);
         },
 
@@ -425,8 +450,9 @@
                 'image/jpg': 'jpg',
                 'image/png': 'png',
                 'image/webp': 'webp',
-                'image/gif': 'gif'
-            })[mimeType] || 'png';
+                'image/gif': 'gif',
+                'image/svg+xml': 'svg'
+            })[String(mimeType || '').split(';')[0].trim().toLowerCase()] || 'png';
         },
 
         async saveAssetFromBlob(blob, usageType, originalName = '') {
@@ -474,9 +500,11 @@
             if (assetUrlCache.has(key)) return assetUrlCache.get(key);
             const asset = await LocalGalleryDB.getAsset(hash);
             if (!asset) return '';
-            let blob = preferThumb && asset.thumbBlob ? asset.thumbBlob : asset.blob;
-            // 生成图（含旧数据、缩略图）展示时也用带标签的 JPG，保证右键“另存为”同样带 XMP 标签
-            if ((asset.usageTypes || []).includes('generation')) {
+            const originalBlob = await this.normalizeImageBlob(asset.blob);
+            const untouchedFormat = this.isPreservedFormat(originalBlob);
+            // GIF/SVG 展示原图而非静态缩略图，右键保存也保留动画/矢量格式。
+            let blob = !untouchedFormat && preferThumb && asset.thumbBlob ? asset.thumbBlob : originalBlob;
+            if ((asset.usageTypes || []).includes('generation') && !untouchedFormat) {
                 try {
                     blob = await this.toLabeledJpegBlob(blob);
                 } catch (error) {
@@ -514,8 +542,7 @@
             const response = await fetch(url, { cache: 'no-store' });
             if (!response.ok) throw new Error(`下载结果图失败 (${response.status})`);
             const blob = await response.blob();
-            if (blob.type) return blob;
-            return new Blob([await blob.arrayBuffer()], { type: fallbackMimeType });
+            return this.normalizeImageBlob(blob.type ? blob : new Blob([blob], { type: fallbackMimeType }));
         },
 
         async resultToBlob(result, fallbackMimeType = 'image/jpeg') {
@@ -535,14 +562,18 @@
         async downloadAsset(hash) {
             const asset = await LocalGalleryDB.getAsset(hash);
             if (!asset) throw new Error('图片不存在');
-            const shouldDownloadJpeg = (asset.usageTypes || []).includes('generation');
-            const downloadBlob = shouldDownloadJpeg ? await this.toLabeledJpegBlob(asset.blob) : asset.blob;
+            const originalBlob = await this.normalizeImageBlob(asset.blob);
+            const isUntouchedFormat = this.isPreservedFormat(originalBlob);
+            const shouldDownloadJpeg = (asset.usageTypes || []).includes('generation') && !isUntouchedFormat;
+            const downloadBlob = shouldDownloadJpeg ? await this.toLabeledJpegBlob(originalBlob) : originalBlob;
             const url = this.createObjectUrl(downloadBlob);
             const a = document.createElement('a');
             a.href = url;
             const fallbackName = `${hash}.${this.extensionFromMime(downloadBlob.type || asset.mimeType)}`;
             const originalName = asset.originalName || fallbackName;
-            a.download = shouldDownloadJpeg ? originalName.replace(/\.[^.]+$/, '.jpg') : originalName;
+            const extension = this.extensionFromMime(downloadBlob.type || asset.mimeType);
+            const stem = originalName.replace(/\.[^.]+$/, '');
+            a.download = shouldDownloadJpeg || isUntouchedFormat ? `${stem}.${extension}` : originalName;
             document.body.appendChild(a);
             a.click();
             a.remove();
@@ -551,7 +582,7 @@
     };
 
     const BrowserGenerationClient = {
-        async generateImage({ provider, apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask }) {
+        async generateImage({ provider, apiKey, prompt, model, imageSize, aspectRatio, outputFormat, referenceHashes, onProviderTask }) {
             if (provider === '65535') {
                 return this.generate65535({ apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask });
             }
@@ -562,7 +593,7 @@
                 return this.generateChange2proProxy({ apiKey, prompt, model, imageSize, referenceHashes, onProviderTask });
             }
             const apiModel = model === 'gpt-image-2-grsai' ? 'gpt-image-2-vip' : model;
-            return this.generateGrsai({ apiKey, prompt, model: apiModel, imageSize, aspectRatio, referenceHashes, onProviderTask });
+            return this.generateGrsai({ apiKey, prompt, model: apiModel, imageSize, aspectRatio, outputFormat, referenceHashes, onProviderTask });
         },
 
         async generate65535({ apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask }) {
@@ -649,9 +680,18 @@
             try { await LocalGalleryDB.putSetting('globalConfig', globalConfig); } catch (error) { console.warn(error); }
         },
 
-        async generateGrsai({ apiKey, prompt, model, imageSize, aspectRatio, referenceHashes, onProviderTask }) {
+        async generateGrsai({ apiKey, prompt, model, imageSize, aspectRatio, outputFormat = 'png', referenceHashes, onProviderTask }) {
             const images = await this.getReferenceDataUrls(referenceHashes);
             const body = { model, prompt, aspectRatio, imageSize, replyType: 'async' };
+            if (GPT_IMAGE_26_MODELS.includes(model)) {
+                body.outputFormat = getModelOutputFormats(model).includes(outputFormat) ? outputFormat : 'png';
+                body.quality = 'auto';
+                if (model === 'gpt-image-2.6') {
+                    // 普通版只支持 1K，直接传宽高比，避免使用 VIP 的 2K/4K 像素映射。
+                    body.aspectRatio = /^\d+:\d+$/.test(aspectRatio) ? aspectRatio : '1:1';
+                    delete body.imageSize;
+                }
+            }
             if (images.length) body.images = images;
             let lastError = null;
             for (const host of this.getGrsaiHostOrder()) {
@@ -1352,10 +1392,21 @@
         const win = windows[windowId];
         if (!win || !generation) return;
         setWindowModel(windowId, generation.model);
+        const outputSelect = document.getElementById(`imageOutputFormat-${windowId}`);
+        if (outputSelect) {
+            const formats = getModelOutputFormats(generation.model);
+            outputSelect.value = formats.includes(generation.outputFormat) ? generation.outputFormat : 'png';
+        }
         const model = generation.model || getSelectedModel(windowId);
         if (isModel65535(model)) {
             if (generation.imageSize) selectButtonByData(`#openaiSizePanel-${windowId}`, 'data-size', generation.imageSize);
             if (generation.aspectRatio) selectButtonByData(`#openaiRatioSelector-${windowId}`, 'data-ratio', generation.aspectRatio);
+            syncGptImageSizingUI(windowId);
+            return;
+        }
+        if (model === 'gpt-image-2.6') {
+            win.selectedSize = '1K';
+            win.selectedRatio = generation.aspectRatio || '1:1';
             syncGptImageSizingUI(windowId);
             return;
         }
@@ -1686,8 +1737,10 @@
         const selectedModel = document.getElementById(`model-${windowId}`).value;
         const is65535Model = getModelProvider(selectedModel) === '65535';
         const usesChange2pro = isChange2proModel(selectedModel);
-        const usesMappedImageSize = isGptImageModel(selectedModel);
-        const selectedImageSize = getFixedBananaModelSize(selectedModel) || win.selectedSize;
+        const usesMappedImageSize = isGptImageModel(selectedModel) && selectedModel !== 'gpt-image-2.6';
+        const selectedImageSize = selectedModel === 'gpt-image-2.6' ? '1K' : (getFixedBananaModelSize(selectedModel) || win.selectedSize);
+        const requestedFormat = document.getElementById(`imageOutputFormat-${windowId}`)?.value || 'png';
+        const outputFormat = getModelOutputFormats(selectedModel).includes(requestedFormat) ? requestedFormat : 'png';
         const selectedAspectRatio = win.selectedRatio;
         const mappedImageSize = usesMappedImageSize
             ? getOpenAIImageSize(selectedImageSize, selectedAspectRatio)
@@ -1734,6 +1787,7 @@
             model: selectedModel,
             imageSize: mappedImageSize,
             aspectRatio: usesMappedImageSize ? mappedImageSize : selectedAspectRatio,
+            outputFormat,
             referenceHashes,
             resultHashes: [],
             error: '',
@@ -1769,10 +1823,12 @@
                         model: selectedModel,
                         imageSize: mappedImageSize,
                         aspectRatio: requestAspectRatio,
+                        outputFormat,
                         referenceHashes
                     });
                     const blob = await ImageAssetService.toLabeledJpegBlob(blobs[0]);
-                    const asset = await ImageAssetService.saveAssetFromBlob(blob, 'generation', `${selectedModel}_${new Date().toISOString().replace(/[:.]/g, '-')}_${index + 1}.jpg`);
+                    const extension = ImageAssetService.extensionFromMime(blob.type);
+                    const asset = await ImageAssetService.saveAssetFromBlob(blob, 'generation', `${selectedModel}_${new Date().toISOString().replace(/[:.]/g, '-')}_${index + 1}.${extension}`);
                     generation.resultHashes.push(asset.hash);
                     taskData.completed += 1;
                     taskData.results[index] = { success: true, assetHash: asset.hash, prompt };
